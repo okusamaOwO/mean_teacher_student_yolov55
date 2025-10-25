@@ -71,7 +71,8 @@ yolov3-tiny.conv.15
 __pycache__/
 *.py[cod]
 *$py.class
-
+mini
+local_folder
 # C extensions
 *.so
 
@@ -94,7 +95,7 @@ wheels/
 /wandb/
 .installed.cfg
 *.egg
-
+*.pt
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
