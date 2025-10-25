@@ -90,7 +90,10 @@ class Loggers:
         self.keys = [
             "train/box_loss",
             "train/obj_loss",
-            "train/cls_loss",  # train loss
+            "train/cls_loss",  # train loss (supervised)
+            "train/box_tar_loss",
+            "train/obj_tar_loss", 
+            "train/cls_tar_loss",  # train loss (distillation)
             "metrics/precision",
             "metrics/recall",
             "metrics/mAP_0.5",
@@ -254,8 +257,8 @@ class Loggers:
         x = dict(zip(self.keys, vals))
         if self.csv:
             file = self.save_dir / "results.csv"
-            n = len(x) + 1  # number of cols
-            s = "" if file.exists() else (("%20s," * n % tuple(["epoch"] + self.keys)).rstrip(",") + "\n")  # add header
+            n = len(vals) + 1  # number of cols
+            s = "" if file.exists() else (("%20s," * n % tuple(["epoch"] + list(self.keys)[:len(vals)])).rstrip(",") + "\n")  # add header
             with open(file, "a") as f:
                 f.write(s + ("%20.5g," * n % tuple([epoch] + vals)).rstrip(",") + "\n")
         if self.ndjson_console or self.ndjson_file:
@@ -275,7 +278,7 @@ class Loggers:
 
         if self.wandb:
             if best_fitness == fi:
-                best_results = [epoch] + vals[3:7]
+                best_results = [epoch] + vals[6:10]  # Changed from vals[3:7] to vals[6:10]
                 for i, name in enumerate(self.best_keys):
                     self.wandb.wandb_run.summary[name] = best_results[i]  # log best results in the summary
             self.wandb.log(x)
@@ -314,7 +317,7 @@ class Loggers:
                 self.tb.add_image(f.stem, cv2.imread(str(f))[..., ::-1], epoch, dataformats="HWC")
 
         if self.wandb:
-            self.wandb.log(dict(zip(self.keys[3:10], results)))
+            self.wandb.log(dict(zip(self.keys[6:13], results)))  # Changed from self.keys[3:10]
             self.wandb.log({"Results": [wandb.Image(str(f), caption=f.name) for f in files]})
             # Calling wandb.log. TODO: Refactor this into WandbLogger.log_model
             if not self.opt.evolve:
@@ -327,14 +330,14 @@ class Loggers:
             self.wandb.finish_run()
 
         if self.clearml and not self.opt.evolve:
-            self.clearml.log_summary(dict(zip(self.keys[3:10], results)))
+            self.clearml.log_summary(dict(zip(self.keys[6:13], results)))  # Changed from self.keys[3:10]
             [self.clearml.log_plot(title=f.stem, plot_path=f) for f in files]
             self.clearml.log_model(
                 str(best if best.exists() else last), "Best Model" if best.exists() else "Last Model", epoch
             )
 
         if self.comet_logger:
-            final_results = dict(zip(self.keys[3:10], results))
+            final_results = dict(zip(self.keys[6:13], results))  # Changed from self.keys[3:10]
             self.comet_logger.on_train_end(files, self.save_dir, last, best, epoch, final_results)
 
     def on_params_update(self, params: dict):

@@ -22,7 +22,8 @@
 *.cfg
 !setup.cfg
 !cfg/yolov3*.cfg
-
+*.pyc 
+.idea
 storage.googleapis.com
 runs/*
 data/*

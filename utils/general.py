@@ -1292,3 +1292,16 @@ if Path(inspect.stack()[0].filename).parent.parent.as_posix() in inspect.stack()
     cv2.imread, cv2.imwrite, cv2.imshow = imread, imwrite, imshow  # redefine
 
 # Variables ------------------------------------------------------------------------------------------------------------
+
+def update_teacher_model(model_teacher, model_student, alpha=0.99):
+    """
+    Update teacher model parameters using exponential moving average (EMA) of student model.
+    
+    Args:
+        model_teacher: Teacher model to update
+        model_student: Student model to copy from
+        alpha: EMA decay rate (default: 0.99)
+    """
+    with torch.no_grad():
+        for param_t, param_s in zip(model_teacher.parameters(), model_student.parameters()):
+            param_t.data.mul_(alpha).add_(param_s.data, alpha=1 - alpha)
