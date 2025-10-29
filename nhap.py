@@ -55,7 +55,8 @@ from utils.general import (
     strip_optimizer,
     non_max_suppression,
     yaml_save,
-    update_teacher_model
+    update_teacher_model,
+    get_features
 )
 from utils.downloads import attempt_download, is_url
 from utils.dataloaders import create_dataloader
@@ -437,6 +438,14 @@ def train(hyp, opt, device, callbacks):
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(model_student)  # init loss class
+    feature_maps = {}
+    target_layers = {'4th_layer' : 3}
+    hook_handles = []  # Store hook handles so we can remove them later
+    for name, layer_index in target_layers.items():
+        hook_function = get_features(feature_maps, name)
+        handle = model_student.model[layer_index].register_forward_hook(hook_function)
+        hook_handles.append(handle)
+        
     callbacks.run("on_train_start")
     LOGGER.info(
         f"Image sizes {imgsz} train, {imgsz} val\n"
@@ -529,7 +538,13 @@ def train(hyp, opt, device, callbacks):
             # Forward
             with torch.cuda.amp.autocast(amp):
                 # 1. Supervised loss on clear images (student)
+                # example layer indices
+                feature_maps.clear()
                 pred_student_clear = model_student(src_imgs)
+                
+                for layer_name, feature_map in feature_maps.items():
+                    print("on_feature_map_extracted", layer_name, feature_map)
+                
                 loss_supervised, loss_items_supervised = compute_loss(
                     pred_student_clear, src_labels)
 
@@ -537,6 +552,7 @@ def train(hyp, opt, device, callbacks):
                 with torch.no_grad():
                     # Returns [inference_out, train_out]
                     pred_teacher_foggy = model_teacher(tar_imgs)
+
 
                     # Apply NMS to get pseudo labels from inference output
                     pseudo_labels_list = non_max_suppression(
@@ -701,9 +717,13 @@ def train(hyp, opt, device, callbacks):
             log_vals = list(mloss) + list(results) + lr
             callbacks.run("on_fit_epoch_end", log_vals,
                           epoch, best_fitness, fi)
-
+            
             # Save model
             if (not nosave) or (final_epoch and not evolve):
+                # Remove hooks before saving to avoid pickling issues
+                for handle in hook_handles:
+                    handle.remove()
+                
                 # Save student model checkpoint
                 ckpt_student = {
                     "epoch": epoch,
@@ -747,6 +767,13 @@ def train(hyp, opt, device, callbacks):
                 del ckpt_student, ckpt_teacher
                 callbacks.run("on_model_save", last_student,
                               epoch, final_epoch, best_fitness, fi)
+                
+                # Re-register hooks after saving
+                hook_handles.clear()
+                for name, layer_index in target_layers.items():
+                    hook_function = get_features(feature_maps, name)
+                    handle = model_student.model[layer_index].register_forward_hook(hook_function)
+                    hook_handles.append(handle)
 
         # EarlyStopping
         if RANK != -1:  # if DDP training

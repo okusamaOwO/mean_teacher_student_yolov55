@@ -72,6 +72,15 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # suppress verbose TF compiler warning
 os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"  # suppress "NNPACK.cpp could not initialize NNPACK" warnings
 os.environ["KINETO_LOG_LEVEL"] = "5"  # suppress verbose PyTorch profiler output when computing FLOPs
 
+def get_features(feature_maps_dict, name):
+    """
+    Returns a hook function that saves the output of a layer
+    into the provided dictionary.
+    """
+    def hook(model, input, output):
+        # Store the output in the dictionary that was passed to the outer function
+        feature_maps_dict[name] = output.detach()
+    return hook
 
 def is_ascii(s=""):
     """Checks if input string `s` contains only ASCII characters; returns `True` if so, otherwise `False`."""
