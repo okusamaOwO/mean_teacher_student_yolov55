@@ -1,3 +1,6 @@
+*.zip
+mid_clear
+mid_foggy_zurich
 # Repo-specific GitIgnore ----------------------------------------------------------------------------------------------
 *.jpg
 *.jpeg
