@@ -72,7 +72,10 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # suppress verbose TF compiler warning
 os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"  # suppress "NNPACK.cpp could not initialize NNPACK" warnings
 os.environ["KINETO_LOG_LEVEL"] = "5"  # suppress verbose PyTorch profiler output when computing FLOPs
 
-
+def get_unsupervised_loss_weight(epoch):
+    """Computes sigmoid activation with a scaling factor `lambda_weight`."""
+    return 1 / (1 + math.exp(-0.3 * (epoch - 15)))
+    
 def is_ascii(s=""):
     """Checks if input string `s` contains only ASCII characters; returns `True` if so, otherwise `False`."""
     s = str(s)  # convert list, tuple, None, etc. to str

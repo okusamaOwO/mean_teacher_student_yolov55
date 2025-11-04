@@ -55,7 +55,9 @@ from utils.general import (
     strip_optimizer,
     non_max_suppression,
     yaml_save,
-    update_teacher_model
+    update_teacher_model,
+    get_unsupervised_loss_weight
+    
 )
 from utils.downloads import attempt_download, is_url
 from utils.dataloaders import create_dataloader
@@ -463,7 +465,7 @@ def train(hyp, opt, device, callbacks):
         # Update mosaic border (optional)
         # b = int(random.uniform(0.25 * imgsz, 0.75 * imgsz + gs) // gs * gs)
         # dataset.mosaic_border = [b - imgsz, -b]  # height, width borders
-
+        lambda_weight = get_unsupervised_loss_weight(epoch)
         mloss = torch.zeros(6, device=device)  # mean losses
         if RANK != -1:
             clear_loader.sampler.set_epoch(epoch)
@@ -610,6 +612,7 @@ def train(hyp, opt, device, callbacks):
                     unsupervised_cls_loss = loss_items_distillation[2]
 
                     # Combine losses
+
                     loss = loss_supervised + lambda_weight * loss_distillation
 
                     # Combine loss items: [box, obj, cls, distillation]
