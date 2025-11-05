@@ -498,7 +498,7 @@ def train(hyp, opt, device, callbacks):
             except StopIteration:
                 data_iter_tar = iter(foggy_loader)
                 tar_imgs, tar_labels, tar_paths, _ = next(data_iter_tar)
-
+            
             src_imgs = src_imgs.to(device, non_blocking=True).float() / 255.0
             tar_imgs = tar_imgs.to(device, non_blocking=True).float() / 255.0
             src_labels = src_labels.to(device)
@@ -550,6 +550,15 @@ def train(hyp, opt, device, callbacks):
                         multi_label=True,
                         agnostic=single_cls
                     )
+                    print(pseudo_labels_list)
+                    print("-" * 200)
+                    print(len(pseudo_labels_list))
+                    print("-" * 200)
+                    print(pseudo_labels_list[0].shape)
+                    print("-" * 200)
+                    print(tar_paths[0])
+                    exit()
+
 
                 # 3. Convert pseudo labels to target format [batch_idx, class, x_center, y_center, width, height]
                 # Similar to SSDA: process NMS detections into training format

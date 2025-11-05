@@ -72,9 +72,20 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # suppress verbose TF compiler warning
 os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"  # suppress "NNPACK.cpp could not initialize NNPACK" warnings
 os.environ["KINETO_LOG_LEVEL"] = "5"  # suppress verbose PyTorch profiler output when computing FLOPs
 
+def xyxy2xywhn(x, w=640, h=640, clip=False):
+    # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right
+    if clip:
+        clip_coords(x, (h, w))  # warning: inplace clip
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / w  # x center
+    y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / h  # y center
+    y[:, 2] = (x[:, 2] - x[:, 0]) / w  # width
+    y[:, 3] = (x[:, 3] - x[:, 1]) / h  # height
+    return y
+    
 def get_unsupervised_loss_weight(epoch):
     """Computes sigmoid activation with a scaling factor `lambda_weight`."""
-    return 1 / (1 + math.exp(-0.3 * (epoch - 15)))
+    return 1 / (1 + math.exp(-0.3 * (epoch - 3)))
     
 def is_ascii(s=""):
     """Checks if input string `s` contains only ASCII characters; returns `True` if so, otherwise `False`."""
