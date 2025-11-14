@@ -204,7 +204,7 @@ def train(hyp, opt, device, callbacks):
     init_seeds(opt.seed + 1 + RANK, deterministic=True)
     with torch_distributed_zero_first(LOCAL_RANK):
         data_dict = data_dict or check_dataset(data)  # check if None
-    train_path, val_path = data_dict["train"], data_dict["val"]
+    train_path, val_path, fog_path = data_dict["train"], data_dict["val"], data_dict["zurich_path"]
     nc = 1 if single_cls else int(data_dict["nc"])  # number of classes
     names = {0: "item"} if single_cls and len(data_dict["names"]) != 1 else data_dict["names"]  # class names
     is_coco = isinstance(val_path, str) and val_path.endswith("coco/val2017.txt")  # COCO dataset
@@ -216,7 +216,6 @@ def train(hyp, opt, device, callbacks):
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
         ckpt = torch_load(weights, map_location="cpu")  # load checkpoint to CPU to avoid CUDA memory leak
-        print("CHECKPOINT INFORMATION", ckpt.keys())
         student_model = Model(cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
         exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
         csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
@@ -226,7 +225,6 @@ def train(hyp, opt, device, callbacks):
     else:
         student_model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     # cứ làm đi rồi fix sau
-    teacher_model = deepcopy(student_model)
     amp = check_amp(student_model)  # check AMP
     
     
@@ -286,6 +284,7 @@ def train(hyp, opt, device, callbacks):
     # SyncBatchNorm
     if opt.sync_bn and cuda and RANK != -1:
         student_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(student_model).to(device)
+
         LOGGER.info("Using SyncBatchNorm()")
 
     # Trainloader
@@ -304,9 +303,31 @@ def train(hyp, opt, device, callbacks):
         image_weights=opt.image_weights,
         quad=opt.quad,
         prefix=colorstr("train: "),
-        shuffle=False,
+        shuffle=True,
         seed=opt.seed,
     )
+
+    # Foggyloader
+    fog_loader, fog_dataset = create_dataloader(
+        fog_path,
+        imgsz,
+        batch_size // WORLD_SIZE,
+        gs,
+        single_cls,
+        hyp=hyp,
+        augment=False,
+        cache=None if opt.cache == "val" else opt.cache,
+        rect=opt.rect,
+        rank=LOCAL_RANK,
+        workers=workers,
+        image_weights=opt.image_weights,
+        quad=opt.quad,
+        prefix=colorstr("train: "),
+        shuffle=True,
+        seed=opt.seed,
+    )
+    
+
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
     assert mlc < nc, f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
@@ -350,6 +371,14 @@ def train(hyp, opt, device, callbacks):
     student_model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     student_model.names = names
 
+    # teacher model is the copy of student model
+    teacher_model = deepcopy(student_model)
+
+    # teacher_model don't need to be updated 
+    for param in teacher_model.parameters():
+        param.requires_grad = False
+
+
     # Start training
     t0 = time.time()
     nb = len(train_loader)  # number of batches
@@ -390,11 +419,14 @@ def train(hyp, opt, device, callbacks):
         LOGGER.info(("\n" + "%11s" * 7) % ("Epoch", "GPU_mem", "box_loss", "obj_loss", "cls_loss", "Instances", "Size"))
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
-        optimizer.zero_grad()
+
+        optimizer.zero_grad() # ủa sao cái zero_grad lại ở đây ? 
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run("on_train_batch_start")
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
+            fog_imgs, _ , fog_paths, _ = next(iter(fog_loader))
+            fog_imgs = fog_imgs.to(device, non_blocking=True).float() / 255
 
             # Warmup
             if ni <= nw:
@@ -415,8 +447,8 @@ def train(hyp, opt, device, callbacks):
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
 
-            # Forward
             with torch.cuda.amp.autocast(amp):
+                # SUPERVISED LEARNING 
                 pred = student_model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
@@ -424,41 +456,34 @@ def train(hyp, opt, device, callbacks):
                 if opt.quad:
                     loss *= 4.0
 
-            # applying nms for detecting
-            student_model.eval()
-            with torch.inference_mode():
-                new_pred, train_out = student_model(imgs)
-                pred_nms = non_max_suppression(new_pred, conf_thres=0.5, iou_thres=0.5,
-                                               max_det=50, multi_label=True, agnostic=single_cls)
-                det = pred_nms[0]
-                print(det)
-                # idk its shape ? 
-                first_img = imgs[0]  # shape = 3, 640, 640 C, H, W
-                first_img = first_img.cpu().numpy() * 255
-                first_img = first_img.astype(np.uint8).transpose(1, 2, 0)  # H, W, C
-                first_img = np.ascontiguousarray(first_img)
+                # UNSUPERVISED LEARNING
+                teacher_model.eval()
+                with torch.inference_mode():
+                    # print("shape of output:", teacher_model(fog_imgs).shape)
+                    fog_pred, _ = teacher_model(fog_imgs)
+                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.5, iou_thres=0.5,
+                                                max_det=50, multi_label=True, agnostic=single_cls)
+                    det = nms_pred[0]
+                    print(det)
+                    # idk its shape ? 
+                    first_img = fog_imgs[0]  # shape = 3, 640, 640 C, H, W
+                    first_img = first_img.cpu().numpy() * 255
+                    first_img = first_img.astype(np.uint8).transpose(1, 2, 0)  # H, W, C
+                    first_img = np.ascontiguousarray(first_img)                
+                    import cv2
+                    for *xyxy, conf, cls in det:
+                        label = f'{conf:.2f}'
+                        cv2.rectangle(first_img, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), (255,0,0), 2)
+                        cv2.putText(first_img, label, (int(xyxy[0]), int(xyxy[1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36,255,12), 2)
+                    
+                    cv2.imwrite("result.jpg", first_img)
+                    print("Saved result.jpg")
 
-                import cv2
-                for *xyxy, conf, cls in det:
-                    label = f'{conf:.2f}'
-                    cv2.rectangle(first_img, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), (255,0,0), 2)
-                    cv2.putText(first_img, label, (int(xyxy[0]), int(xyxy[1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36,255,12), 2)
-                
-                cv2.imwrite("result.jpg", first_img)
-                print("Saved result.jpg")
+                exit()                
 
-                exit()
-                # path_of_img = paths[0]
-                # original_img = cv2.imread(path_of_img)
-                # original_img = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
-                # annotator = Annotator(original_img, line_width=3, example=str({0: 'person', 1: 'car'}))
+                # process nms_pred
 
-                # det[:, :4] = scale_boxes(imgs[0].shape[1:], det[:, :4], original_img.shape).round()
-                # print(det[:, :4])
-                # for x1,y1,x2,y2 in reversed(det[:,:4]):
-                #     cv2.rectangle(original_img, (int(x1), int(y1)), (int(x2), int(y2)), color=(0, 0, 255), thickness=2)
-                # output_filename = 'result_image.jpg'
-                # cv2.imwrite(output_filename, original_img)
+
             # Backward
             scaler.scale(loss).backward()
 
