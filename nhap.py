@@ -96,7 +96,7 @@ from utils.torch_utils import (
     smart_resume,
     torch_distributed_zero_first,
 )
-
+from utils.helpers import from_nms_to_targets
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv("RANK", -1))
 WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
@@ -455,7 +455,6 @@ def train(hyp, opt, device, callbacks):
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
                     loss *= 4.0
-
                 # UNSUPERVISED LEARNING
                 teacher_model.eval()
                 with torch.inference_mode():
@@ -463,29 +462,22 @@ def train(hyp, opt, device, callbacks):
                     fog_pred, _ = teacher_model(fog_imgs)
                     nms_pred = non_max_suppression(fog_pred, conf_thres=0.5, iou_thres=0.5,
                                                 max_det=50, multi_label=True, agnostic=single_cls)
-                    det = nms_pred[0]
-                    print(det)
-                    # idk its shape ? 
-                    first_img = fog_imgs[0]  # shape = 3, 640, 640 C, H, W
-                    first_img = first_img.cpu().numpy() * 255
-                    first_img = first_img.astype(np.uint8).transpose(1, 2, 0)  # H, W, C
-                    first_img = np.ascontiguousarray(first_img)                
-                    import cv2
-                    for *xyxy, conf, cls in det:
-                        label = f'{conf:.2f}'
-                        cv2.rectangle(first_img, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])), (255,0,0), 2)
-                        cv2.putText(first_img, label, (int(xyxy[0]), int(xyxy[1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36,255,12), 2)
-                    
-                    cv2.imwrite("result.jpg", first_img)
-                    print("Saved result.jpg")
 
-                exit()                
+                    if nms_pred:
+                        fog_labels = from_nms_to_targets(nms_pred, device) 
+                        print("fog labels shape", fog_labels.shape) # expected to have shape [num,6]
+                
+                pred_fog = student_model(fog_imgs)
+                unsupervised_loss, unsupervised_loss_items = compute_loss(pred_fog, fog_labels)
 
+                total_loss = loss + unsupervised_loss
+                # print("loss items:", loss_items)
+                # print("unsupervised loss items:", unsupervised_loss_items)
                 # process nms_pred
 
 
             # Backward
-            scaler.scale(loss).backward()
+            scaler.scale(total_loss).backward()
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             if ni - last_opt_step >= accumulate:
