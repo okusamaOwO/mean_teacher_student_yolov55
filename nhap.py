@@ -96,7 +96,7 @@ from utils.torch_utils import (
     smart_resume,
     torch_distributed_zero_first,
 )
-from utils.helpers import from_nms_to_targets
+from utils.helpers import from_nms_to_targets, update_teacher
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv("RANK", -1))
 WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
@@ -455,6 +455,7 @@ def train(hyp, opt, device, callbacks):
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
                     loss *= 4.0
+
                 # UNSUPERVISED LEARNING
                 teacher_model.eval()
                 with torch.inference_mode():
@@ -464,9 +465,7 @@ def train(hyp, opt, device, callbacks):
                                                 max_det=50, multi_label=True, agnostic=single_cls)
 
                     if nms_pred:
-                        fog_labels = from_nms_to_targets(nms_pred, device) 
-                        print("fog labels shape", fog_labels.shape) # expected to have shape [num,6]
-                
+                        fog_labels = from_nms_to_targets(nms_pred, device)                 
                 pred_fog = student_model(fog_imgs)
                 unsupervised_loss, unsupervised_loss_items = compute_loss(pred_fog, fog_labels)
 
@@ -488,8 +487,8 @@ def train(hyp, opt, device, callbacks):
                 optimizer.zero_grad()
                 if ema:
                     ema.update(student_model)
+                update_teacher(student_model, teacher_model, hyp['teacher_momentum'])
                 last_opt_step = ni
-
             # Log
             if RANK in {-1, 0}:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
@@ -501,6 +500,7 @@ def train(hyp, opt, device, callbacks):
                 callbacks.run("on_train_batch_end", student_model, ni, imgs, targets, paths, list(mloss))
                 if callbacks.stop_training:
                     return
+
             # end batch ------------------------------------------------------------------------------------------------
 
         # Scheduler

@@ -34,3 +34,17 @@ def from_nms_to_targets(nms_pred, device, imgsz = (640,640)):
     else:
         return torch.zeros((0, 6), dtype=nms_pred[0].dtype).to(device)
 
+def update_teacher(student_model, teacher_model, alpha):
+    """Update teacher model parameters using exponential moving average of student model parameters.
+
+    Args:
+        student_model (torch.nn.Module): The student model.
+        teacher_model (torch.nn.Module): The teacher model to be updated.
+        alpha (float): The EMA decay factor.
+
+    Returns:
+        None
+    """
+    print("Updating teacher model with alpha:", alpha)
+    for student_param, teacher_param in zip(student_model.parameters(), teacher_model.parameters()):
+        teacher_param.data.mul_(alpha).add_(student_param.data, alpha=1 - alpha)

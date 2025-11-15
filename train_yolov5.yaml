@@ -1,6 +1,6 @@
-train: /content/mean_teacher_student_yolov55/local_folder/train/images
-val: /content/mean_teacher_student_yolov55/local_folder/val/images
-zurich_path: /content/mean_teacher_student_yolov55/mini/train/images
+train: /content/mean_teacher_student_yolov55/my_dataset/mid_clear/train/images
+val: /content/mean_teacher_student_yolov55/my_dataset/mid_clear/val/images
+zurich_path: /content/mean_teacher_student_yolov55/my_dataset/mid_foggy_zurich/train/images
 nc: 2
 names:
   0: person
