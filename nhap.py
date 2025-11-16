@@ -295,7 +295,7 @@ def train(hyp, opt, device, callbacks):
         gs,
         single_cls,
         hyp=hyp,
-        augment=False,
+        augment=True,
         cache=None if opt.cache == "val" else opt.cache,
         rect=opt.rect,
         rank=LOCAL_RANK,
@@ -315,7 +315,7 @@ def train(hyp, opt, device, callbacks):
         gs,
         single_cls,
         hyp=hyp,
-        augment=False,
+        augment=True,
         cache=None if opt.cache == "val" else opt.cache,
         rect=opt.rect,
         rank=LOCAL_RANK,
@@ -421,11 +421,12 @@ def train(hyp, opt, device, callbacks):
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
 
         optimizer.zero_grad() # ủa sao cái zero_grad lại ở đây ? 
+        fog_iter = iter(fog_loader)
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run("on_train_batch_start")
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
-            fog_imgs, _ , fog_paths, _ = next(iter(fog_loader))
+            fog_imgs, _ , fog_paths, _ = next(fog_iter)
             fog_imgs = fog_imgs.to(device, non_blocking=True).float() / 255
 
             # Warmup
@@ -461,7 +462,7 @@ def train(hyp, opt, device, callbacks):
                 with torch.inference_mode():
                     # print("shape of output:", teacher_model(fog_imgs).shape)
                     fog_pred, _ = teacher_model(fog_imgs)
-                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.5, iou_thres=0.5,
+                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.25, iou_thres=0.5,
                                                 max_det=50, multi_label=True, agnostic=single_cls)
 
                     if nms_pred:
@@ -535,7 +536,7 @@ def train(hyp, opt, device, callbacks):
             log_vals = list(mloss) + list(results) + lr
             callbacks.run("on_fit_epoch_end", log_vals, epoch, best_fitness, fi)
 
-            # Save model
+            # Save student model
             if (not nosave) or (final_epoch and not evolve):  # if save
                 ckpt = {
                     "epoch": epoch,
@@ -557,6 +558,9 @@ def train(hyp, opt, device, callbacks):
                     torch.save(ckpt, w / f"epoch{epoch}.pt")
                 del ckpt
                 callbacks.run("on_model_save", last, epoch, final_epoch, best_fitness, fi)
+            
+
+
 
         # EarlyStopping
         if RANK != -1:  # if DDP training
