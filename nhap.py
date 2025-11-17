@@ -96,7 +96,7 @@ from utils.torch_utils import (
     smart_resume,
     torch_distributed_zero_first,
 )
-from utils.helpers import from_nms_to_targets, update_teacher
+from utils.helpers import from_nms_to_targets, update_teacher, visualize_nms_for_an_img, from_targets_to_nms
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv("RANK", -1))
 WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
@@ -451,58 +451,18 @@ def train(hyp, opt, device, callbacks):
             with torch.cuda.amp.autocast(amp):
                 # SUPERVISED LEARNING
                 pred = student_model(imgs)  # forward
-                
-                # turn targets to nms_pred, after that visualize nms_pred
-                nms_pred_first_img = []
-                for x in targets:
-                    img_ord, label, x_center, y_center, w, h = x
-                    if img_ord == 0:
-                        x_center_px = x_center * 640
-                        y_center_px = y_center * 640
-                        w_px = w * 640  # FULL width in pixels
-                        h_px = h * 640  # FULL height in pixels
-                        
-                        # Convert from center format to corner format
-                        x1 = x_center_px - w_px / 2.0
-                        x2 = x_center_px + w_px / 2.0
-                        y1 = y_center_px - h_px / 2.0
-                        y2 = y_center_px + h_px / 2.0
-                        
-                        nms_pred_first_img.append([x1.item(), y1.item(), x2.item(), y2.item(), 1.0, label.item()])
-    
-                nmg_pred_first_img = torch.tensor(nms_pred_first_img, device=device)
-                
-                det = nmg_pred_first_img
-                print(det)
-                # idk its shape ?
-                first_img = imgs[0]  # shape = 3, 640, 640 C, H, W
-                first_img = first_img.cpu().numpy() * 255
-                first_img = first_img.astype(np.uint8).transpose(1, 2, 0)  # H, W, C
-                first_img = np.ascontiguousarray(first_img)
-
-                import cv2
-                for *xyxy, conf, cls in det:
-                    label = f'{conf:.2f}'
-                    cv2.rectangle(first_img, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])),
-                                    (255, 0, 0), 2)
-                    cv2.putText(first_img, label, (int(xyxy[0]), int(xyxy[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                                (36, 255, 12), 2)
-
-                cv2.imwrite("result.jpg", first_img)
-                print("Saved result.jpg")
-                exit()
-
-
-                    
-
-
-
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
                 if opt.quad:
                     loss *= 4.0
 
+                # convert targets to nms
+                clear_nms = from_targets_to_nms(targets, device)
+                converted_again = from_nms_to_targets(clear_nms, device)
+                print(converted_again[0])
+                print(targets[0])
+                exit()
                 # UNSUPERVISED LEARNING
                 teacher_model.eval()
                 with torch.inference_mode():
@@ -510,30 +470,6 @@ def train(hyp, opt, device, callbacks):
                     fog_pred, _ = teacher_model(fog_imgs)
                     nms_pred = non_max_suppression(fog_pred, conf_thres=0.25, iou_thres=0.5,
                                                 max_det=50, multi_label=True, agnostic=single_cls)
-
-                    # visualize nms_pred
-                    det = nms_pred[0]
-                    print(det)
-                    # idk its shape ?
-                    first_img = fog_imgs[0]  # shape = 3, 640, 640 C, H, W
-                    first_img = first_img.cpu().numpy() * 255
-                    first_img = first_img.astype(np.uint8).transpose(1, 2, 0)  # H, W, C
-                    first_img = np.ascontiguousarray(first_img)
-
-                    import cv2
-                    for *xyxy, conf, cls in det:
-                        label = f'{conf:.2f}'
-                        cv2.rectangle(first_img, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])),
-                                      (255, 0, 0), 2)
-                        cv2.putText(first_img, label, (int(xyxy[0]), int(xyxy[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                                    (36, 255, 12), 2)
-
-                    cv2.imwrite("result.jpg", first_img)
-                    print("Saved result.jpg")
-
-                    exit()
-
-
                     if nms_pred:
                         fog_labels = from_nms_to_targets(nms_pred, device)
                 pred_fog = student_model(fog_imgs)
