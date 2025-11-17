@@ -1,5 +1,6 @@
 import torch 
 import numpy as np
+import random
 from utils.general import xyxy2xywhn
 
 def from_nms_to_targets(nms_pred, device, imgsz = (640,640)):
@@ -71,3 +72,45 @@ def update_teacher(student_model, teacher_model, alpha):
     """
     for student_param, teacher_param in zip(student_model.parameters(), teacher_model.parameters()):
         teacher_param.data.mul_(alpha).add_(student_param.data, alpha=1 - alpha)
+
+
+def visualize_nms_for_an_img(det, img, save_dir="result.jpg"):
+    """Visualize NMS detections on a single image and save it as 'result.jpg'.
+    
+    This function takes detection results from non-maximum suppression (NMS) and draws
+    bounding boxes with confidence scores on the input image. The visualization is saved
+    to disk as 'result.jpg'.
+    
+    Args:
+        det (torch.Tensor): Detection tensor of shape (N, 6) where N is the number of detections.
+                           Each detection contains [x1, y1, x2, y2, confidence, class_id].
+                           Coordinates should be in pixel values (0-640 for 640x640 images).
+                           Example: tensor([[120.5, 200.3, 350.2, 480.7, 0.89, 0.0],
+                                           [50.1, 100.2, 180.9, 220.4, 0.75, 2.0]])
+        img (torch.Tensor): Image tensor of shape (C, H, W) with values in range [0, 1].
+                           Typically (3, 640, 640) for RGB images.
+                           Will be converted to uint8 and transposed to (H, W, C) for visualization.
+    
+    Returns:
+        None: Saves the visualized image to 'result.jpg' in the current directory.
+    
+    Note:
+        - Bounding boxes are drawn in blue (BGR: 255, 0, 0)
+        - Confidence scores are displayed in green text above each box
+        - The function overwrites 'result.jpg' if it already exists
+        - Input image is normalized [0, 1] and will be scaled to [0, 255]
+    """
+    img = img.cpu().numpy() * 255
+    img = img.astype(np.uint8).transpose(1, 2, 0)  # H, W, C
+    img = np.ascontiguousarray(img)
+
+    import cv2
+    for *xyxy, conf, cls in det:
+        label = f'{conf:.2f}'
+        cv2.rectangle(img, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])),
+                        (255, 0, 0), 2)
+        cv2.putText(img, label, (int(xyxy[0]), int(xyxy[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                    (36, 255, 12), 2)
+
+    cv2.imwrite(save_dir, img)
+    print(f"Saved {save_dir}")
