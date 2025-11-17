@@ -226,8 +226,8 @@ def train(hyp, opt, device, callbacks):
         student_model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
     # cứ làm đi rồi fix sau
     amp = check_amp(student_model)  # check AMP
-    
-    
+
+
     # Freeze
     freeze = [f"model.{x}." for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
     for k, v in student_model.named_parameters():
@@ -326,7 +326,7 @@ def train(hyp, opt, device, callbacks):
         shuffle=True,
         seed=opt.seed,
     )
-    
+
 
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
@@ -374,7 +374,7 @@ def train(hyp, opt, device, callbacks):
     # teacher model is the copy of student model
     teacher_model = deepcopy(student_model)
 
-    # teacher_model don't need to be updated 
+    # teacher_model don't need to be updated
     for param in teacher_model.parameters():
         param.requires_grad = False
 
@@ -420,7 +420,7 @@ def train(hyp, opt, device, callbacks):
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
 
-        optimizer.zero_grad() # ủa sao cái zero_grad lại ở đây ? 
+        optimizer.zero_grad() # ủa sao cái zero_grad lại ở đây ?
         fog_iter = iter(fog_loader)
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run("on_train_batch_start")
@@ -447,9 +447,9 @@ def train(hyp, opt, device, callbacks):
                 if sf != 1:
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
-
+            # Forward
             with torch.cuda.amp.autocast(amp):
-                # SUPERVISED LEARNING 
+                # SUPERVISED LEARNING
                 pred = student_model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
@@ -465,8 +465,31 @@ def train(hyp, opt, device, callbacks):
                     nms_pred = non_max_suppression(fog_pred, conf_thres=0.25, iou_thres=0.5,
                                                 max_det=50, multi_label=True, agnostic=single_cls)
 
+                    # visualize nms_pred
+                    det = nms_pred[0]
+                    print(det)
+                    # idk its shape ?
+                    first_img = fog_imgs[0]  # shape = 3, 640, 640 C, H, W
+                    first_img = first_img.cpu().numpy() * 255
+                    first_img = first_img.astype(np.uint8).transpose(1, 2, 0)  # H, W, C
+                    first_img = np.ascontiguousarray(first_img)
+
+                    import cv2
+                    for *xyxy, conf, cls in det:
+                        label = f'{conf:.2f}'
+                        cv2.rectangle(first_img, (int(xyxy[0]), int(xyxy[1])), (int(xyxy[2]), int(xyxy[3])),
+                                      (255, 0, 0), 2)
+                        cv2.putText(first_img, label, (int(xyxy[0]), int(xyxy[1]) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                                    (36, 255, 12), 2)
+
+                    cv2.imwrite("result.jpg", first_img)
+                    print("Saved result.jpg")
+
+                    exit()
+
+
                     if nms_pred:
-                        fog_labels = from_nms_to_targets(nms_pred, device)                 
+                        fog_labels = from_nms_to_targets(nms_pred, device)
                 pred_fog = student_model(fog_imgs)
                 unsupervised_loss, unsupervised_loss_items = compute_loss(pred_fog, fog_labels)
 
@@ -558,7 +581,7 @@ def train(hyp, opt, device, callbacks):
                     torch.save(ckpt, w / f"epoch{epoch}.pt")
                 del ckpt
                 callbacks.run("on_model_save", last, epoch, final_epoch, best_fitness, fi)
-            
+
 
 
 
