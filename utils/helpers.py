@@ -2,6 +2,90 @@ import torch
 import numpy as np
 import random
 from utils.general import xyxy2xywhn
+import csv
+import matplotlib.pyplot as plt
+import pandas as pd
+
+def from_targets_to_nms(targets, device, imgsz=(640, 640)):
+    """Convert YOLOv5 targets to NMS prediction format for a batch.
+
+    This function is useful for visualizing ground truth labels in the same format
+    as model predictions, allowing consistent visualization and debugging.
+
+    Args:
+        targets (torch.Tensor): Target tensor of shape (total_detections, 6) where each target
+                               is represented as [image_index, class, x_center, y_center, width, height].
+                               All coordinates are normalized to [0, 1].
+                               Example: tensor([[0.0, 1.0, 0.293, 0.463, 0.034, 0.029],
+                                               [0.0, 2.0, 0.521, 0.381, 0.112, 0.055],
+                                               [1.0, 0.0, 0.645, 0.712, 0.089, 0.124]])
+        device (torch.device): Device to place the output tensors on.
+        imgsz (tuple): Image size as (height, width). Default: (640, 640)
+
+    Returns:
+        list of torch.Tensor: List of NMS-format predictions for each image in the batch.
+                             Each tensor has shape (num_detections, 6) where each detection
+                             is represented as [x1, y1, x2, y2, conf, class].
+                             Coordinates are in pixel values (0-640 for 640x640 images).
+                             Confidence is set to 1.0 for all ground truth boxes.
+                             Example: [tensor([[120.5, 200.3, 350.2, 480.7, 1.0, 1.0],
+                                              [280.1, 150.2, 390.9, 220.4, 1.0, 2.0]]),
+                                      tensor([[350.3, 380.1, 450.6, 480.9, 1.0, 0.0]])]
+
+    Example:
+        >>> # Convert ground truth targets to NMS format for visualization
+        >>> targets = torch.tensor([[0, 1, 0.5, 0.5, 0.2, 0.3],
+        ...                        [1, 0, 0.3, 0.4, 0.1, 0.15]])
+        >>> nms_format = from_targets_to_nms(targets, device='cuda', imgsz=(640, 640))
+        >>> print(nms_format[0])  # First image detections
+        tensor([[256., 192., 384., 288., 1.0, 1.0]])
+        >>> print(nms_format[1])  # Second image detections
+        tensor([[160., 208., 224., 272., 1.0, 0.0]])
+    """
+    # Ensure targets are on the correct device
+    targets = targets.to(device)
+    
+    # Find the number of images in the batch
+    batch_size = int(targets[:, 0].max().item()) + 1 if len(targets) > 0 else 0
+    
+    nms_pred_batch = []
+    
+    for img_id in range(batch_size):
+        # Get all targets for this image
+        img_targets = targets[targets[:, 0] == img_id]  # Filter by image index
+        
+        if len(img_targets) == 0:
+            # No detections for this image - create empty tensor on correct device
+            nms_pred_batch.append(torch.zeros((0, 6), device=device, dtype=targets.dtype))
+            continue
+        
+        # Extract [class, x_center, y_center, width, height] (all normalized)
+        cls = img_targets[:, 1].unsqueeze(-1)  # Shape: (N, 1)
+        xywhn = img_targets[:, 2:6]  # Shape: (N, 4)
+        
+        # Convert normalized xywh to pixel xywh (stays on same device)
+        xywh_px = xywhn.clone()
+        xywh_px[:, 0] = xywhn[:, 0] * imgsz[1]  # x_center to pixels
+        xywh_px[:, 1] = xywhn[:, 1] * imgsz[0]  # y_center to pixels
+        xywh_px[:, 2] = xywhn[:, 2] * imgsz[1]  # width to pixels
+        xywh_px[:, 3] = xywhn[:, 3] * imgsz[0]  # height to pixels
+        
+        # Convert xywh to xyxy (corner format) - stays on same device
+        xyxy = torch.zeros_like(xywh_px)
+        xyxy[:, 0] = xywh_px[:, 0] - xywh_px[:, 2] / 2  # x1 = x_center - width/2
+        xyxy[:, 1] = xywh_px[:, 1] - xywh_px[:, 3] / 2  # y1 = y_center - height/2
+        xyxy[:, 2] = xywh_px[:, 0] + xywh_px[:, 2] / 2  # x2 = x_center + width/2
+        xyxy[:, 3] = xywh_px[:, 1] + xywh_px[:, 3] / 2  # y2 = y_center + height/2
+        
+        # Create confidence column (all 1.0 for ground truth) - explicitly set device
+        conf = torch.ones((len(img_targets), 1), device=device, dtype=targets.dtype)
+        
+        # Concatenate to NMS format: [x1, y1, x2, y2, conf, cls]
+        nms_pred = torch.cat([xyxy, conf, cls], dim=1)
+        
+        nms_pred_batch.append(nms_pred)
+    
+    return nms_pred_batch
 
 def from_nms_to_targets(nms_pred, device, imgsz = (640,640)):
     """Convert NMS predictions to target format.
@@ -114,3 +198,63 @@ def visualize_nms_for_an_img(det, img, save_dir="result.jpg"):
 
     cv2.imwrite(save_dir, img)
     print(f"Saved {save_dir}")
+
+def save_losses_to_csv(batch_num, supervised_loss, unsupervised_loss, total_loss, csv_path):
+    """Save losses to CSV file for later analysis."""
+    file_exists = csv_path.exists()
+    
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['Batch', 'Supervised_Loss', 'Unsupervised_Loss', 'Total_Loss'])
+        writer.writerow([batch_num, supervised_loss, unsupervised_loss, total_loss])
+
+def plot_losses_from_csv(csv_path, save_path):
+    """Plot losses from saved CSV file."""
+    df = pd.read_csv(csv_path)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    # Plot 1: All losses together
+    axes[0, 0].plot(df['Batch'], df['Supervised_Loss'], label='Supervised', color='blue', alpha=0.7)
+    axes[0, 0].plot(df['Batch'], df['Unsupervised_Loss'], label='Unsupervised', color='red', alpha=0.7)
+    axes[0, 0].plot(df['Batch'], df['Total_Loss'], label='Total', color='green', linewidth=2)
+    axes[0, 0].set_xlabel('Batch')
+    axes[0, 0].set_ylabel('Loss')
+    axes[0, 0].set_title('All Losses')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Plot 2: Supervised loss only
+    axes[0, 1].plot(df['Batch'], df['Supervised_Loss'], color='blue')
+    axes[0, 1].set_xlabel('Batch')
+    axes[0, 1].set_ylabel('Loss')
+    axes[0, 1].set_title('Supervised Loss')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Plot 3: Unsupervised loss only
+    axes[1, 0].plot(df['Batch'], df['Unsupervised_Loss'], color='red')
+    axes[1, 0].set_xlabel('Batch')
+    axes[1, 0].set_ylabel('Loss')
+    axes[1, 0].set_title('Unsupervised Loss')
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # Plot 4: Moving average (smoothed)
+    window = 50
+    df['Supervised_MA'] = df['Supervised_Loss'].rolling(window=window).mean()
+    df['Unsupervised_MA'] = df['Unsupervised_Loss'].rolling(window=window).mean()
+    df['Total_MA'] = df['Total_Loss'].rolling(window=window).mean()
+    
+    axes[1, 1].plot(df['Batch'], df['Supervised_MA'], label='Supervised (MA)', color='blue')
+    axes[1, 1].plot(df['Batch'], df['Unsupervised_MA'], label='Unsupervised (MA)', color='red')
+    axes[1, 1].plot(df['Batch'], df['Total_MA'], label='Total (MA)', color='green', linewidth=2)
+    axes[1, 1].set_xlabel('Batch')
+    axes[1, 1].set_ylabel('Loss (Moving Average)')
+    axes[1, 1].set_title(f'Smoothed Losses (window={window})')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Loss plot saved to {save_path}")
