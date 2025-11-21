@@ -14,7 +14,7 @@ Datasets:   https://github.com/ultralytics/yolov5/tree/master/data
 Tutorial:   https://docs.ultralytics.com/yolov5/tutorials/train_custom_data
 """
 
-from utils.helpers import from_nms_to_targets, update_teacher, visualize_nms_for_an_img, from_targets_to_nms, save_losses_to_csv, plot_losses_from_csv
+from utils.helpers import from_nms_to_targets, update_teacher, visualize_nms_for_an_img, from_targets_to_nms
 from utils.torch_utils import (
     EarlyStopping,
     ModelEMA,
@@ -207,7 +207,7 @@ def train(hyp, opt, device, callbacks):
     init_seeds(opt.seed + 1 + RANK, deterministic=True)
     with torch_distributed_zero_first(LOCAL_RANK):
         data_dict = data_dict or check_dataset(data)  # check if None
-    train_path, val_path, fog_path = data_dict["train"], data_dict["val"], data_dict["zurich_path"]
+    train_path, val_path, fog_path, val_clear, val_fog = data_dict["train"], data_dict["val"], data_dict["zurich_path"], data_dict['val_clear'], data_dict['val_fog']
     nc = 1 if single_cls else int(data_dict["nc"])  # number of classes
     names = {0: "item"} if single_cls and len(
         data_dict["names"]) != 1 else data_dict["names"]  # class names
@@ -422,13 +422,12 @@ def train(hyp, opt, device, callbacks):
         f"Logging results to {colorstr('bold', save_dir)}\n"
         f"Starting training for {epochs} epochs..."
     )
-    csv_path = save_dir / 'losses.csv'
     # epoch ------------------------------------------------------------------
     for epoch in range(start_epoch, epochs):
-        if epoch < 20:
-            unsupervised_loss_weight = 0.3 *  (1 - math.cos(epoch / 20 * math.pi / 2))
+        if epoch + opt.trained_epochs < 20:
+            unsupervised_loss_weight = 2 *  (1 - math.cos((epoch + opt.trained_epochs) / 20 * math.pi / 2))
         else:
-            unsupervised_loss_weight = 0.3
+            unsupervised_loss_weight = 2
         callbacks.run("on_train_epoch_start")
         student_model.train()
 
@@ -513,7 +512,7 @@ def train(hyp, opt, device, callbacks):
                 with torch.inference_mode():
                     # print("shape of output:", teacher_model(fog_imgs).shape)
                     fog_pred, _ = teacher_model(fog_imgs)
-                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.25, iou_thres=0.5,
+                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.7, iou_thres=0.5,
                                                    max_det=50, multi_label=True, agnostic=single_cls)
                     if nms_pred:
                         fog_labels = from_nms_to_targets(nms_pred, device)
@@ -558,9 +557,6 @@ def train(hyp, opt, device, callbacks):
                               ni, imgs, targets, paths, list(mloss))
                 if callbacks.stop_training:
                     return
-                if RANK in {-1, 0}:
-                    save_losses_to_csv(
-                        ni, loss.item(), unsupervised_loss.item(), total_loss.item(), csv_path)
 
             # end batch ------------------------------------------------------------------------------------------------
 
@@ -588,6 +584,68 @@ def train(hyp, opt, device, callbacks):
                     callbacks=callbacks,
                     compute_loss=compute_loss,
                 )
+                
+                # validate on clear domain
+                val_clear_loader = create_dataloader(
+                    val_clear,
+                    imgsz,
+                    batch_size // WORLD_SIZE * 2,
+                    gs,
+                    single_cls,
+                    hyp=hyp,
+                    cache=None if noval else opt.cache,
+                    rect=True,
+                    rank=-1,
+                    workers=workers * 2,
+                    pad=0.5,
+                    prefix=colorstr("val clear: "),
+                )[0]
+                results_clear, maps_clear, _ = validate.run(
+                    data_dict,
+                    batch_size=batch_size // WORLD_SIZE * 2,
+                    imgsz=imgsz,
+                    half=amp,
+                    model=ema.ema,
+                    single_cls=single_cls,
+                    dataloader=val_clear_loader,
+                    save_dir=save_dir / 'val_clear',
+                    plots=False,
+                    callbacks=callbacks,
+                    compute_loss=compute_loss,
+                )
+                LOGGER.info(f"Clear Domain - P: {results_clear[0]:.3f}, R: {results_clear[1]:.3f}, mAP50: {results_clear[2]:.3f}, mAP50-95: {results_clear[3]:.3f}")
+                # Validation on fog domain
+                val_fog_loader = create_dataloader(
+                    val_fog,
+                    imgsz,
+                    batch_size // WORLD_SIZE * 2,
+                    gs,
+                    single_cls,
+                    hyp=hyp,
+                    cache=None if noval else opt.cache,
+                    rect=True,
+                    rank=-1,
+                    workers=workers * 2,
+                    pad=0.5,
+                    prefix=colorstr("val_fog: "),
+                )[0]
+                
+                results_fog, maps_fog, _ = validate.run(
+                    data_dict,
+                    batch_size=batch_size // WORLD_SIZE * 2,
+                    imgsz=imgsz,
+                    half=amp,
+                    model=ema.ema,
+                    single_cls=single_cls,
+                    dataloader=val_fog_loader,
+                    save_dir=save_dir / 'val_fog',
+                    plots=False,
+                    callbacks=callbacks,
+                    compute_loss=compute_loss,
+                )
+                LOGGER.info(f"Fog Domain - P: {results_fog[0]:.3f}, R: {results_fog[1]:.3f}, mAP50: {results_fog[2]:.3f}, mAP50-95: {results_fog[3]:.3f}")
+
+
 
             # Update best mAP
             # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
@@ -596,8 +654,14 @@ def train(hyp, opt, device, callbacks):
             if fi > best_fitness:
                 best_fitness = fi
             log_vals = list(mloss) + list(results) + lr
-            callbacks.run("on_fit_epoch_end", log_vals,
-                          epoch, best_fitness, fi)
+            if not noval or final_epoch:
+                # Add clear and fog mAP metrics: mAP50_clear, mAP50-95_clear, mAP50_fog, mAP50-95_fog
+                log_vals += [results_clear[2], results_clear[3], results_fog[2], results_fog[3]]
+            else:
+                # If validation skipped, add placeholder values
+                log_vals += [0, 0, 0, 0]
+            
+            callbacks.run("on_fit_epoch_end", log_vals, epoch, best_fitness, fi)
 
             # Save student model
             if (not nosave) or (final_epoch and not evolve):  # if save
@@ -663,9 +727,6 @@ def train(hyp, opt, device, callbacks):
                             mloss) + list(results) + lr, epoch, best_fitness, fi)
 
         callbacks.run("on_train_end", last, best, epoch, results)
-    if RANK in {-1, 0}:
-        plot_losses_from_csv(csv_path, save_dir / 'losses_plot.png')
-
     torch.cuda.empty_cache()
     return results
 
@@ -762,7 +823,8 @@ def parse_opt(known=False):
                         help="Global training seed")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="Automatic DDP Multi-GPU argument, do not modify")
-
+    parser.add_argument("--trained_epochs", type=int, default=0,
+                        help="the number of epochs trained from checkpoint")
     # Logger arguments
     parser.add_argument("--entity", default=None, help="Entity")
     parser.add_argument("--upload_dataset", nargs="?", const=True,

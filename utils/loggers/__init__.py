@@ -101,6 +101,10 @@ class Loggers:
             "x/lr0",
             "x/lr1",
             "x/lr2",
+            "metrics/mAP_0.5_clear",
+            "metrics/mAP_0.5:0.95_clear",
+            "metrics/mAP_0.5_fog",
+            "metrics/mAP_0.5:0.95_fog",
         ]  # params
         self.best_keys = ["best/epoch", "best/precision", "best/recall", "best/mAP_0.5", "best/mAP_0.5:0.95"]
         for k in LOGGERS:

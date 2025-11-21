@@ -258,3 +258,78 @@ def plot_losses_from_csv(csv_path, save_path):
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Loss plot saved to {save_path}")
+
+
+# Add a new helper function for saving validation metrics
+def save_val_metrics_to_csv(epoch, mixed_metrics, clear_metrics, fog_metrics, csv_path):
+    """Save validation metrics for mixed, clear, and fog domains to CSV."""
+    import csv
+    from pathlib import Path
+    
+    file_exists = Path(csv_path).exists()
+    
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(['epoch', 'mixed_P', 'mixed_R', 'mixed_mAP50', 'mixed_mAP50-95',
+                           'clear_P', 'clear_R', 'clear_mAP50', 'clear_mAP50-95',
+                           'fog_P', 'fog_R', 'fog_mAP50', 'fog_mAP50-95'])
+        writer.writerow([epoch, 
+                        mixed_metrics[0], mixed_metrics[1], mixed_metrics[2], mixed_metrics[3],
+                        clear_metrics[0], clear_metrics[1], clear_metrics[2], clear_metrics[3],
+                        fog_metrics[0], fog_metrics[1], fog_metrics[2], fog_metrics[3]])
+
+def plot_val_metrics_from_csv(csv_path, save_path):
+    """Plot validation metrics from CSV file."""
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    
+    df = pd.read_csv(csv_path)
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('Validation Metrics: Clear vs Fog Domain', fontsize=16)
+    
+    # Plot Precision
+    axes[0, 0].plot(df['epoch'], df['mixed_P'], label='Mixed', marker='o')
+    axes[0, 0].plot(df['epoch'], df['clear_P'], label='Clear', marker='s')
+    axes[0, 0].plot(df['epoch'], df['fog_P'], label='Fog', marker='^')
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Precision')
+    axes[0, 0].set_title('Precision')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True)
+    
+    # Plot Recall
+    axes[0, 1].plot(df['epoch'], df['mixed_R'], label='Mixed', marker='o')
+    axes[0, 1].plot(df['epoch'], df['clear_R'], label='Clear', marker='s')
+    axes[0, 1].plot(df['epoch'], df['fog_R'], label='Fog', marker='^')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Recall')
+    axes[0, 1].set_title('Recall')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True)
+    
+    # Plot mAP@0.5
+    axes[1, 0].plot(df['epoch'], df['mixed_mAP50'], label='Mixed', marker='o')
+    axes[1, 0].plot(df['epoch'], df['clear_mAP50'], label='Clear', marker='s')
+    axes[1, 0].plot(df['epoch'], df['fog_mAP50'], label='Fog', marker='^')
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('mAP@0.5')
+    axes[1, 0].set_title('mAP@0.5')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True)
+    
+    # Plot mAP@0.5:0.95
+    axes[1, 1].plot(df['epoch'], df['mixed_mAP50-95'], label='Mixed', marker='o')
+    axes[1, 1].plot(df['epoch'], df['clear_mAP50-95'], label='Clear', marker='s')
+    axes[1, 1].plot(df['epoch'], df['fog_mAP50-95'], label='Fog', marker='^')
+    axes[1, 1].set_xlabel('Epoch')
+    axes[1, 1].set_ylabel('mAP@0.5:0.95')
+    axes[1, 1].set_title('mAP@0.5:0.95')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    LOGGER.info(f"Validation metrics plot saved to {save_path}")
