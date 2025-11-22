@@ -425,9 +425,9 @@ def train(hyp, opt, device, callbacks):
     # epoch ------------------------------------------------------------------
     for epoch in range(start_epoch, epochs):
         if epoch + opt.trained_epochs < 20:
-            unsupervised_loss_weight = 2 *  (1 - math.cos((epoch + opt.trained_epochs) / 20 * math.pi / 2))
+            unsupervised_loss_weight = 1.5 * (1 - math.cos((epoch + opt.trained_epochs) / 20 * math.pi / 2))
         else:
-            unsupervised_loss_weight = 2
+            unsupervised_loss_weight = 1.5
         callbacks.run("on_train_epoch_start")
         student_model.train()
 
