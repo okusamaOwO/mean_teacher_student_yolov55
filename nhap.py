@@ -326,6 +326,11 @@ def train(hyp, opt, device, callbacks):
         shuffle=True,
         seed=opt.seed,
     )
+    # applying weak augmentation for foggy images
+    hyp['fliplr'] = 1     # 50% chance to flip
+    hyp['scale'] = 0.5
+    hyp['translate'] = 0.1
+    hyp['mosaic'] = 0.0
 
     # Foggyloader
     fog_loader, fog_dataset = create_dataloader(
@@ -346,7 +351,12 @@ def train(hyp, opt, device, callbacks):
         shuffle=True,
         seed=opt.seed,
     )
-
+    img = next(iter(fog_loader))[0][0]
+    import matplotlib.pyplot as plt
+    plt.imshow(img.permute(1, 2, 0))
+    plt.savefig("augmented_foggy_image.png")
+    print("Saved augmented foggy image to 'augmented_foggy_image.png'")
+    exit()
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
     assert mlc < nc, f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
@@ -512,7 +522,7 @@ def train(hyp, opt, device, callbacks):
                 with torch.inference_mode():
                     # print("shape of output:", teacher_model(fog_imgs).shape)
                     fog_pred, _ = teacher_model(fog_imgs)
-                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.7, iou_thres=0.5,
+                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.4, iou_thres=0.5,
                                                    max_det=50, multi_label=True, agnostic=single_cls)
                     if nms_pred:
                         fog_labels = from_nms_to_targets(nms_pred, device)
