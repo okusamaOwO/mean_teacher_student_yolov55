@@ -391,3 +391,20 @@ def apply_color_jitter(imgs, brightness=0.4, contrast=0.4, saturation=0.4, hue=0
     jittered_imgs = jitter(imgs)
     
     return jittered_imgs
+
+def get_activation(name, storage):
+    def hook(model, input, output):
+        storage[name] = output
+    return hook
+
+class FeatureHook:
+    """
+    A hook class to extract feature maps. 
+    Defined at module level to ensure the model remains picklable.
+    """
+    def __init__(self, name, storage):
+        self.name = name
+        self.storage = storage
+
+    def __call__(self, model, input, output):
+        self.storage[self.name] = output

@@ -20,7 +20,9 @@ from utils.helpers import (
     visualize_nms_for_an_img,
     from_targets_to_nms,
     apply_gaussian_blur, 
-    apply_color_jitter)
+    apply_color_jitter,
+    get_activation,
+    FeatureHook)
 from utils.torch_utils import (
     EarlyStopping,
     ModelEMA,
@@ -426,6 +428,20 @@ def train(hyp, opt, device, callbacks):
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(student_model)  # init loss class
+    feature_maps_student = {}
+    feature_maps_teacher = {}
+    target_layers = [4, 6, 9] 
+
+    for layer_idx in target_layers:
+        # Register on student
+        student_model.model[layer_idx].register_forward_hook(
+            FeatureHook(layer_idx, feature_maps_student)
+        )
+        # Register on teacher
+        teacher_model.model[layer_idx].register_forward_hook(
+            FeatureHook(layer_idx, feature_maps_teacher)
+        )
+
     callbacks.run("on_train_start")
     LOGGER.info(
         f"Image sizes {imgsz} train, {imgsz} val\n"
@@ -524,24 +540,20 @@ def train(hyp, opt, device, callbacks):
                 if opt.quad:
                     loss *= 4.0
 
-                # convert targets to nms
-                # clear_nms = from_targets_to_nms(targets, device)
-                # converted_again = from_nms_to_targets(clear_nms, device)
-                # print(converted_again[0])
-                # print(targets[0])
-                # exit()
                 # UNSUPERVISED LEARNING
                 teacher_model.eval()
                 with torch.inference_mode():
                     # print("shape of output:", teacher_model(fog_imgs).shape)
-                    fog_pred, _ = teacher_model(fog_imgs)
-                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.3, iou_thres=0.5,
-                                                   max_det=50, multi_label=True, agnostic=single_cls)
-                    if nms_pred:
-                        fog_labels = from_nms_to_targets(nms_pred, device)
-                pred_fog = student_model(fog_imgs_student)
-                unsupervised_loss, unsupervised_loss_items = compute_loss(
-                    pred_fog, fog_labels)
+                    _ = teacher_model(fog_imgs)
+                _ = student_model(fog_imgs_student)
+                distillation_loss = torch.tensor(0., device=device)
+                mse_loss_fn = nn.MSELoss()
+                for layer_idx in target_layers:
+                    s_feat = feature_maps_student[layer_idx]
+                    t_feat = feature_maps_teacher[layer_idx]
+                    distillation_loss += mse_loss_fn(s_feat, t_feat)
+
+                unsupervised_loss = distillation_loss 
 
                 total_loss = loss + unsupervised_loss_weight * unsupervised_loss
                 # print("loss items:", loss_items)
