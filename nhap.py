@@ -14,7 +14,13 @@ Datasets:   https://github.com/ultralytics/yolov5/tree/master/data
 Tutorial:   https://docs.ultralytics.com/yolov5/tutorials/train_custom_data
 """
 
-from utils.helpers import from_nms_to_targets, update_teacher, visualize_nms_for_an_img, from_targets_to_nms
+from utils.helpers import (
+    from_nms_to_targets,
+    update_teacher,
+    visualize_nms_for_an_img,
+    from_targets_to_nms,
+    apply_gaussian_blur, 
+    apply_color_jitter)
 from utils.torch_utils import (
     EarlyStopping,
     ModelEMA,
@@ -58,6 +64,7 @@ from utils.general import (
     non_max_suppression
 )
 import math
+import random
 from utils.downloads import attempt_download, is_url
 from utils.dataloaders import create_dataloader
 from utils.callbacks import Callbacks
@@ -351,12 +358,6 @@ def train(hyp, opt, device, callbacks):
         shuffle=True,
         seed=opt.seed,
     )
-    img = next(iter(fog_loader))[0][0]
-    import matplotlib.pyplot as plt
-    plt.imshow(img.permute(1, 2, 0))
-    plt.savefig("augmented_foggy_image.png")
-    print("Saved augmented foggy image to 'augmented_foggy_image.png'")
-    exit()
     labels = np.concatenate(dataset.labels, 0)
     mlc = int(labels[:, 0].max())  # max label class
     assert mlc < nc, f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
@@ -465,17 +466,29 @@ def train(hyp, opt, device, callbacks):
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)
 
         optimizer.zero_grad()  # ủa sao cái zero_grad lại ở đây ?
-        fog_iter = iter(fog_loader)
+        fog_iter = iter(fog_loader)  # for teacher model (applied flipping horizontally & random scaling)
         # batch -------------------------------------------------------------
         for i, (imgs, targets, paths, _) in pbar:
             callbacks.run("on_train_batch_start")
             # number integrated batches (since train start)
             ni = i + nb * epoch
-            imgs = imgs.to(device, non_blocking=True).float() / \
-                255  # uint8 to float32, 0-255 to 0.0-1.0
+            imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
+            # STRONG AUGMENTATION FOR STUDENT MODELS 
+            if random.random() < 0.5:
+                imgs = apply_color_jitter(imgs, brightness=0.2, contrast=0.5, saturation=0.5)
+    
+            if random.random() < 0.3: # Lower prob than student, but still useful
+                imgs = apply_gaussian_blur(imgs, kernel_size=5, sigma_range=(0.1, 1.5))
+
+            #STRONG AUGMENT FOR STUDENT BUT FOG IMGS
             fog_imgs, _, fog_paths, _ = next(fog_iter)
             fog_imgs = fog_imgs.to(device, non_blocking=True).float() / 255
-
+            fog_imgs_student = fog_imgs.clone()
+            if random.random() < 1:
+                fog_imgs_student = apply_gaussian_blur(fog_imgs_student)
+            
+            if random.random() < 1:
+                fog_imgs_student = apply_color_jitter(fog_imgs_student)
             # Warmup
             if ni <= nw:
                 xi = [0, nw]  # x interp
@@ -522,11 +535,11 @@ def train(hyp, opt, device, callbacks):
                 with torch.inference_mode():
                     # print("shape of output:", teacher_model(fog_imgs).shape)
                     fog_pred, _ = teacher_model(fog_imgs)
-                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.4, iou_thres=0.5,
+                    nms_pred = non_max_suppression(fog_pred, conf_thres=0.3, iou_thres=0.5,
                                                    max_det=50, multi_label=True, agnostic=single_cls)
                     if nms_pred:
                         fog_labels = from_nms_to_targets(nms_pred, device)
-                pred_fog = student_model(fog_imgs)
+                pred_fog = student_model(fog_imgs_student)
                 unsupervised_loss, unsupervised_loss_items = compute_loss(
                     pred_fog, fog_labels)
 

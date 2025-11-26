@@ -5,6 +5,8 @@ from utils.general import xyxy2xywhn
 import csv
 import matplotlib.pyplot as plt
 import pandas as pd
+import torchvision.transforms.functional as TF
+import torchvision
 
 def from_targets_to_nms(targets, device, imgsz=(640, 640)):
     """Convert YOLOv5 targets to NMS prediction format for a batch.
@@ -333,3 +335,59 @@ def plot_val_metrics_from_csv(csv_path, save_path):
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     LOGGER.info(f"Validation metrics plot saved to {save_path}")
+
+def apply_gaussian_blur(imgs, kernel_size=5, sigma_range=(0.1, 2.0)):
+    """
+    Applies Gaussian Blur to a batch of images on GPU.
+    
+    Args:
+        imgs (Tensor): Batch of images (N, C, H, W). 
+                       Values should be 0-1 or 0-255 (works on both).
+        kernel_size (int): Size of the Gaussian kernel. MUST be an odd number (3, 5, 7...).
+                           Larger kernel = capability for stronger blur.
+        sigma_range (tuple): Range (min, max) to select random blur intensity.
+                             Higher sigma = more blur.
+    
+    Returns:
+        Tensor: Blurred batch of images.
+    """
+    # 1. Select a random Sigma (intensity) for this batch
+    sigma = random.uniform(sigma_range[0], sigma_range[1])
+    
+    # 2. Apply the blur using PyTorch's optimized functional API
+    # We pass [kernel_size, kernel_size] to handle H and W dimensions
+    blurred_imgs = TF.gaussian_blur(imgs, kernel_size=[kernel_size, kernel_size], sigma=[sigma, sigma])
+    
+    return blurred_imgs
+
+def apply_color_jitter(imgs, brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1):
+    """
+    Applies random Color Jitter (Brightness, Contrast, Saturation, Hue) to a batch.
+    
+    Args:
+        imgs (Tensor): Batch of images (N, C, H, W). Normalized 0-1 preferred.
+        brightness (float): How much to jitter brightness. Factor chosen from [max(0, 1-b), 1+b].
+        contrast (float): How much to jitter contrast. Factor chosen from [max(0, 1-c), 1+c].
+        saturation (float): How much to jitter saturation. Factor chosen from [max(0, 1-s), 1+s].
+        hue (float): How much to jitter hue. Factor chosen from [-h, h].
+        
+    Returns:
+        Tensor: Jittered batch of images.
+    """
+    
+    # 1. Create the Transform Object (efficiently defines the random logic)
+    # We instantiate it here to utilize its internal random logic
+    jitter = torchvision.transforms.ColorJitter(
+        brightness=brightness, 
+        contrast=contrast, 
+        saturation=saturation, 
+        hue=hue
+    )
+    
+    # 2. Apply to the batch
+    # Note: This applies the SAME random jitter factors to the whole batch for speed.
+    # If you want every single image in the batch to have different jitter, 
+    # you would need to loop through them (slower).
+    jittered_imgs = jitter(imgs)
+    
+    return jittered_imgs
